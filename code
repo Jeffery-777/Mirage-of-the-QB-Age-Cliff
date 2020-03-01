@@ -1,0 +1,200 @@
+library(tidyverse)
+
+qb_seasons <- readRDS(file = "qb_seasons")
+
+#rename cols
+#order cols
+#take out non player fields
+qb_df <- qb_seasons %>%
+  rename(rank = Rk, player = Player, team = Tm, age = Age, 
+         pos = Pos, games = G, games_started = GS, 
+         qb_rec = QBrec, completions = Cmp,
+         attempts = Att, comp_per = `Cmp.`, yards = Yds, 
+         td = TD, td_per_att = `TD.`, 
+         int = Int, int_per = `Int.`, long = Lng, ya = `Y.A`, aya = `AY.A`,
+         yards_per_comp = `Y.C`, yards_game_passing = `Y.G`, 
+         rating = Rate, sacks = Sk, sack_yards_loss = `Yds.1`, 
+         net_ya = `NY.A`, adj_net_ya = `ANY.A`, 
+         sack_per_dropback = `Sk.`, fourth_q_comebacks = X4QC, 
+         game_win_drives = GWD, qbr = QBR, year = year) %>%
+  select(year, player, team, pos, yards, completions, attempts, comp_per, td, 
+         td_per_att, int, ya, net_ya, adj_net_ya, qbr, everything()) %>%
+  filter(player != "Player")
+
+#clean player names
+qb_df$player <- str_replace(qb_df$player, "\\*", "")
+qb_df$player <- str_replace(qb_df$player, "\\+", "")
+
+#change number cols to numeric
+qb_df[,5:33] <- sapply(qb_df[,5:33],as.numeric)
+
+#filter out qbs who played prior to 1978 - make vector w all their names
+too_long_ago <- qb_df %>%
+  filter(year < 1978) %>%
+  select(player) %>%
+  distinct() %>%
+  pull()
+
+#create feature engineered df w only qbs after 1978 
+qb_engineered <- qb_df %>%
+  filter(!player %in% too_long_ago, attempts > 99) %>%
+  arrange(player, year) %>%
+  group_by(player) %>%
+  mutate(last_yr_ya = lag(ya), diff_ya = ya - last_yr_ya) %>%
+  mutate(last_yr_net_ya = lag(net_ya), 
+         diff_net_ya = net_ya - last_yr_net_ya) %>%
+  mutate(last_yr_adj_netya = lag(adj_net_ya), 
+         diff_adj_netya = adj_net_ya - last_yr_adj_netya) %>%
+  mutate(last_yr_qbr = lag(qbr), diff_qbr = qbr - last_yr_qbr) %>%
+  select(player, year, age, attempts, ya, last_yr_ya, 
+         diff_ya, net_ya, last_yr_net_ya, diff_net_ya, 
+         adj_net_ya, last_yr_adj_netya, diff_adj_netya, 
+         qbr, last_yr_qbr, diff_qbr)
+
+#make vector w current qbs to take out
+active_qbs <- c("Aaron Rodgers","Alex Smith","Ben Roethlisberger","Drew Brees","Joe Flacco","Matt Ryan","Matthew Stafford","Philip Rivers","Ryan Fitzpatrick","Tom Brady")
+
+ten_yr_starters <- qb_engineered %>%
+  filter(!player %in% active_qbs) %>%
+  group_by(player) %>%
+  summarise(years = n()) %>%
+  filter(years > 9) %>%
+  select(player) %>%
+  pull()
+
+#make new df with only retired players
+qb_ten <- qb_engineered %>%
+  filter(player %in% ten_yr_starters)
+
+#now we have a df with engineered cols of JUST qbs who survived in NFL at least ten yrs. Let's see what the abs diff in those metrics:
+
+mean(abs(qb_ten$diff_ya), na.rm = T)
+mean(abs(qb_ten$diff_net_ya), na.rm = T)
+mean(abs(qb_ten$diff_adj_netya), na.rm = T)
+mean(abs(qb_ten$diff_qbr), na.rm = T)
+
+# Article fosues on adj netya, which = 1.12
+
+#what about when we take away final year? if cliff exists, this final year could skew results
+
+qb_minus_last <- qb_engineered %>%
+  filter(player %in% ten_yr_starters) %>%
+  arrange(player, desc(year)) %>%
+  slice(-1)
+
+mean(abs(qb_minus_last$diff_ya), na.rm = T)
+mean(abs(qb_minus_last$diff_net_ya), na.rm = T)
+mean(abs(qb_minus_last$diff_adj_netya), na.rm = T)
+mean(abs(qb_minus_last$diff_qbr), na.rm = T)
+
+#literally no diff in ANYA
+
+#Graphing
+
+#Not all qbs have ANYA reportings so I'm filtering out those who dont by creating this object below and using to filter the graphs afterwards.
+
+#qbs with at least 10 yr of adj net ya data
+qbs_w_ANYA <- qb_engineered %>%
+  drop_na(adj_net_ya) %>%
+  group_by(player) %>%
+  tally() %>%
+  filter(n > 9) %>%
+  pull(player)
+
+ANYA_1_10 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[1:10]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA")+
+  xlab("")+
+  ggtitle("ANYA by Season \n 10 Yr QBs \n Since 1978")+
+  theme(plot.title = element_text(hjust = 0.5, size = 18))
+
+ANYA_11_20 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[11:20]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA") +
+  xlab("")
+
+ANYA_21_30 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[21:30]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA")+
+  xlab("")
+
+ANYA_31_40 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[31:40]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA")+
+  xlab("")
+
+ANYA_41_50 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[41:50]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA")+
+  xlab("")
+
+ANYA_50_55 <- qb_engineered %>%
+  filter(player %in% qbs_w_ANYA[51:57]) %>%
+  group_by(player, age) %>%
+  summarise(yards_attempt = mean(adj_net_ya)) %>%
+  ggplot(aes(age, yards_attempt))+
+  facet_wrap(~player, ncol = 5)+
+  geom_line(size = 1)+
+  geom_smooth(method = "loess", se = F)+
+  #scale_color_manual(values = c("gold2", "red2", "green2", "blue", "springgreen4", "purple"))+
+  scale_x_continuous(breaks = c(20,25,30,35,40))+
+  scale_y_continuous(limits = c(4,9.7))+
+  geom_hline(yintercept = 6.080238, size = 1, color = "black", linetype = "dotted")+
+  theme_classic()+
+  ylab("ANYA") +
+  xlab("Age")
